@@ -1,89 +1,89 @@
 # Enterprise Knowledge AI
 
-Enterprise Knowledge AI est un prototype de recherche documentaire assistée par IA (RAG). Importez un PDF, posez une question en français et ouvrez la page citée pour vérifier la réponse. Chaque source affiche aussi le passage utilisé. Quand les documents ne permettent pas de répondre, l’application peut s’abstenir.
+Enterprise Knowledge AI is a retrieval-augmented generation (RAG) prototype for searching PDF documents. Upload a PDF, ask a question in French, and open the cited page to verify the answer. Each citation includes the passage used to answer the question. When the indexed documents provide too little evidence, the application can abstain.
 
-## Démarrage
+## Quick start
 
-**Prérequis** — Docker avec Compose v2 et une clé OpenAI API autorisée à utiliser `text-embedding-3-small` et `gpt-5-mini`. Les appels d’indexation et de génération sont facturés selon votre compte.
+**Requirements** — Docker with Compose v2 and an OpenAI API key with access to `text-embedding-3-small` and `gpt-5-mini`. OpenAI bills embedding and generation requests to your account.
 
-Depuis la racine du dépôt :
+From the repository root, create the environment file:
 
 ```bash
 cp .env.example .env
-# Renseigner OPENAI_API_KEY dans .env, puis lancer :
+```
+
+Set `OPENAI_API_KEY` in `.env` and start the services:
+
+```bash
 docker compose up --build -d
 docker compose ps
 ```
 
-Ouvrir [localhost:3000](http://localhost:3000). Seule l’interface est publiée sur la boucle locale. PostgreSQL, RustFS et FastAPI restent sur le réseau Docker. La clé OpenAI est lue par FastAPI et `.env` est ignoré par Git.
+Open [localhost:3000](http://localhost:3000). The web interface listens on the local loopback address. PostgreSQL, RustFS, and FastAPI run on the internal Docker network. FastAPI reads the API key, and Git ignores `.env`.
 
 ```bash
-docker compose logs -f api   # Suivre les erreurs d’import ou de génération
-docker compose down          # Arrêter les services en conservant les données
+docker compose logs -f api   # Follow API logs for upload or generation errors
+docker compose down          # Stop the services and keep their data
 ```
 
-Les volumes `postgres` et `objects` conservent respectivement l’index et les originaux. `docker compose down -v` supprime les deux volumes et tous les documents importés.
+The `postgres` and `objects` volumes store the search index and the original PDFs, respectively. Running `docker compose down -v` deletes both volumes and all imported documents.
 
-## Démo
+## Demo
 
-1. Importer [le PDF fictif de remboursement](demo/politique-remboursement.pdf). La page 1 décrit la France et la page 2 la Suisse.
-2. Choisir **Utiliser une question d’exemple**, puis **Poser la question**. La réponse attendue indique un délai de **30 jours à compter de la livraison**, une demande via le portail d’assistance et la facture ainsi que le numéro de commande.
-3. Cliquer sur **politique-remboursement.pdf · page 2** pour vérifier le texte dans le PDF. Le lecteur du navigateur reçoit le fragment `#page=2`.
-4. Poser « Quel délai de remboursement s’applique aux clients canadiens ? ». Le PDF ne couvre pas ce pays. Le résultat attendu est une abstention sans source.
+1. Upload the [sample refund policy PDF](demo/politique-remboursement.pdf). Page 1 covers France, and page 2 covers Switzerland.
+2. Click **Utiliser une question d’exemple** (Use an example question), then **Poser la question** (Ask). The expected answer says Swiss customers have **30 days from delivery** to submit a request through the support portal. They need to include their invoice and order number.
+3. Open **politique-remboursement.pdf · page 2** to verify the answer against the source. The link passes the `#page=2` fragment to the browser’s PDF viewer.
+4. Ask “Quel délai de remboursement s’applique aux clients canadiens ?” (“What is the refund deadline for Canadian customers?”). The sample PDF does not cover Canada. The expected result is an abstention without citations.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    Browser["Navigateur"] --> Next["Next.js"]
+    Browser["Browser"] --> Next["Next.js"]
     Next --> API["FastAPI"]
     API --> Split["pypdf + LlamaIndex"]
     API --> DB["PostgreSQL + pgvector"]
-    API --> Storage["Stockage S3 privé · RustFS en local"]
-    API --> OpenAI["OpenAI · embeddings + Responses API"]
+    API --> Storage["Private S3-compatible storage via RustFS"]
+    API --> OpenAI["OpenAI embeddings and Responses API"]
 ```
 
-| Étape | Implémentation |
+| Stage | Implementation |
 | --- | --- |
-| Import | FastAPI valide la taille et le type du fichier. pypdf extrait le texte page par page. LlamaIndex découpe le texte en passages de 360 tokens avec un chevauchement de 45 tokens. Chaque passage garde la page physique, comptée à partir de 1. |
-| Indexation | OpenAI produit les vecteurs par lots. PostgreSQL enregistre les passages, leurs vecteurs et les termes plein texte. Le PDF original est stocké dans RustFS via l’API S3. L’import devient visible quand le stockage et la transaction PostgreSQL aboutissent. |
-| Recherche | pgvector classe les passages par distance cosinus. La recherche plein texte PostgreSQL classe les passages qui partagent des termes avec la question, avec normalisation française. Reciprocal Rank Fusion fusionne jusqu’à 20 candidats de chaque branche. Les cinq premiers passages alimentent la génération. |
-| Génération | GPT‑5 mini reçoit la question et les passages sélectionnés. La réponse structurée contient le texte et des identifiants de passages. FastAPI vérifie que tous les identifiants appartiennent au contexte fourni, puis reconstruit la référence depuis la base. Les citations sont contrôlées structurellement. Le lien entre une affirmation et le passage reste à vérifier dans le PDF. |
+| Upload | FastAPI validates the file type and size. pypdf extracts text page by page. LlamaIndex splits it into 360-token chunks with a 45-token overlap. Each chunk retains its physical page number, starting at 1. |
+| Indexing | OpenAI generates embeddings in batches. PostgreSQL stores the chunks, their vectors, and the full-text search terms. RustFS stores the original PDF through its S3-compatible API. The document appears in the library after the object upload and the PostgreSQL transaction succeed. |
+| Retrieval | pgvector ranks chunks by cosine distance. PostgreSQL full-text search ranks chunks that share terms with the question, using French text normalization. Reciprocal Rank Fusion combines up to 20 candidates from each search. The top five chunks go to the generation model. |
+| Generation | GPT-5 mini receives the question and the retrieved chunks. Its structured output contains the answer and chunk IDs. FastAPI checks that every ID belongs to the supplied context and builds the citations from database records. Check the quoted passage or PDF page to verify that it supports the answer. |
 
-### Routes HTTP
+### HTTP API
 
-Les routes suivantes sont accessibles via Next.js sur le port 3000.
+Next.js exposes these routes on port 3000.
 
-| Méthode | Route | Effet |
+| Method | Route | Behavior |
 | --- | --- | --- |
-| `POST` | `/api/documents` | Importe le fichier multipart `file` et renvoie ses métadonnées une fois l’indexation terminée. |
-| `GET` | `/api/documents` | Liste les documents indexés. |
-| `GET` | `/api/documents/{id}/pdf` | Lit l’original depuis S3 et sert le PDF en ligne. |
-| `POST` | `/api/ask` | Accepte `{"question": "..."}` et renvoie le texte, les citations et la durée côté API en millisecondes. |
+| `POST` | `/api/documents` | Accepts a multipart upload in the `file` field and returns the document metadata after indexing. |
+| `GET` | `/api/documents` | Lists indexed documents. |
+| `GET` | `/api/documents/{id}/pdf` | Reads the original from S3 and serves it inline as a PDF. |
+| `POST` | `/api/ask` | Accepts `{"question": "..."}` and returns the answer, citations, and API-side latency in milliseconds. |
 
 ```bash
-curl --fail-with-body -F 'file=@demo/politique-remboursement.pdf' \
-  http://localhost:3000/api/documents
-curl --fail-with-body -H 'Content-Type: application/json' \
-  -d '{"question":"Quelle est la procédure de remboursement en Suisse ?"}' \
-  http://localhost:3000/api/ask
+curl --fail-with-body -F 'file=@demo/politique-remboursement.pdf'   http://localhost:3000/api/documents
+curl --fail-with-body -H 'Content-Type: application/json'   -d '{"question":"Quelle est la procédure de remboursement en Suisse ?"}'   http://localhost:3000/api/ask
 ```
 
-## Vérification
+## Verification
 
-GitHub Actions démarre la stack Docker Compose, vérifie la page d’accueil et lance le test d’intégration FastAPI avec PostgreSQL 17 et pgvector. Le test simule les réponses d’OpenAI au niveau HTTP et utilise Moto pour S3. Il contrôle le rejet d’un fichier invalide, l’import du PDF fictif, le classement suisse, la citation page 2, l’intégrité du PDF servi et le rejet d’une citation inventée. Ces tests s’exécutent sans clé et sans frais OpenAI.
+GitHub Actions starts the Docker Compose stack, checks the home page, and runs the FastAPI integration test against PostgreSQL 17 with pgvector. The test mocks OpenAI responses at the HTTP layer and uses Moto for S3. It checks invalid file rejection, sample PDF ingestion, retrieval of the Swiss policy, the page 2 citation, the integrity of the served PDF, abstention, and rejection of a fabricated citation ID. The checks run without an OpenAI key or API charges.
 
-Pour lancer le test localement, utiliser une instance PostgreSQL de test avec pgvector et un utilisateur autorisé à créer un schéma et l’extension.
+To run the integration test locally, use a PostgreSQL test database with pgvector and a database user that can create the extension and a schema.
 
 ```bash
 python3.12 -m venv .venv
 . .venv/bin/activate
 pip install -r api/requirements-test.txt
-TEST_DATABASE_URL='postgresql://user:password@localhost:5432/knowledge' \
-  python -m unittest discover -s api -v
+TEST_DATABASE_URL='postgresql://user:password@localhost:5432/knowledge'   python -m unittest discover -s api -v
 ```
 
-Pour compiler l’interface en local avec Node.js 22 :
+To build the web interface locally with Node.js 22:
 
 ```bash
 cd web
@@ -91,9 +91,9 @@ npm ci
 npm run build
 ```
 
-## Périmètre du prototype
+## Prototype scope
 
-- **Démonstration locale, un espace sans authentification.** Utiliser des données fictives. Avant tout accès partagé, ajouter une authentification et des autorisations pour la recherche, les citations et l’ouverture des originaux.
-- **PDF textuels uniquement.** Un fichier à la fois, jusqu’à 8 Mio, 100 pages et 500 passages. Les PDF scannés sans couche texte demandent un OCR. L’indexation se déroule pendant la requête HTTP.
-- **Données envoyées à OpenAI.** L’API d’embeddings reçoit le texte des passages et les questions. L’API de génération reçoit la question et les cinq passages sélectionnés. L’application configure `store: false` pour la génération. Les règles de conservation du fournisseur restent applicables. [Contrôles des données OpenAI](https://developers.openai.com/api/docs/guides/your-data)
-- **Recherche hybride avec classement exact.** Le prototype affiche la latence de la requête courante. Le reranking par cross-encoder, les permissions, l’historique, les versions et le benchmark de Recall@5, précision des citations, taux de réponses justifiées, p95 et coût par question font partie des extensions du projet.
+- **Single local workspace.** Use synthetic documents for the demo. Shared use requires authentication and access controls for search, citations, and original PDFs.
+- **Text-based PDFs.** Upload one file at a time, up to 8 MiB, 100 pages, and 500 chunks. Scanned PDFs without a text layer require OCR. Indexing runs during the upload request.
+- **Data sent to OpenAI.** The embeddings API receives document chunks and questions. The generation API receives the question and up to five retrieved chunks. The application sets `store: false` for generation. OpenAI’s retention policies still apply. [OpenAI data controls](https://developers.openai.com/api/docs/guides/your-data)
+- **Hybrid search with exact vector ranking.** The interface shows the current request latency. Cross-encoder reranking, document permissions, conversation history, versioning, and evaluation of Recall@5, citation precision, grounded answer rate, p95 latency, and cost per question are future work.
