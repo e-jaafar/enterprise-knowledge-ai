@@ -1,0 +1,58 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: knowledge
+      POSTGRES_USER: knowledge
+      POSTGRES_PASSWORD: local-knowledge
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U knowledge -d knowledge"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  storage:
+    image: rustfs/rustfs:1.0.3
+    command: ["/data"]
+    environment:
+      RUSTFS_ACCESS_KEY: knowledge
+      RUSTFS_SECRET_KEY: local-knowledge
+      RUSTFS_CONSOLE_ENABLE: "false"
+    volumes:
+      - objects:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health/ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  api:
+    build: ./api
+    environment:
+      DATABASE_URL: postgresql://knowledge:local-knowledge@db:5432/knowledge
+      S3_ENDPOINT: http://storage:9000
+      S3_BUCKET: documents
+      AWS_ACCESS_KEY_ID: knowledge
+      AWS_SECRET_ACCESS_KEY: local-knowledge
+      AWS_DEFAULT_REGION: us-east-1
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?Renseigner OPENAI_API_KEY dans .env}
+    depends_on:
+      db:
+        condition: service_healthy
+      storage:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  web:
+    build: ./web
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+volumes:
+  postgres:
+  objects:

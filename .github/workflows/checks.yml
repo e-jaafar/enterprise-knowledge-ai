@@ -1,0 +1,46 @@
+name: Checks
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: knowledge
+          POSTGRES_USER: knowledge
+          POSTGRES_PASSWORD: test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U knowledge -d knowledge"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://knowledge:test-only@localhost:5432/knowledge
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -r api/requirements-test.txt
+      - run: python -m unittest discover -s api -v
+  compose:
+    runs-on: ubuntu-latest
+    env:
+      OPENAI_API_KEY: test-only
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker compose up --build --wait --wait-timeout 90
+      - run: |
+          curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:3000/ -o /tmp/knowledge.html
+          grep -q 'Interroger les documents' /tmp/knowledge.html
+          test "$(curl --fail --silent http://127.0.0.1:3000/api/documents)" = '[]'
+      - if: failure()
+        run: docker compose logs --no-color
